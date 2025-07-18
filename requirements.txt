@@ -1,7 +1,7 @@
 streamlit
 torch
-# transformers
-# huggingface-hub
+#transformers
+#huggingface-hub
 opencv-python
 scikit-image
 Pillow
