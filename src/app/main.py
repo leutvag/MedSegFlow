@@ -1,5 +1,7 @@
 ### Code
 ## Here we will write the code for the NN
+# cd MedSegFlow/src/app
+# streamlit run main.py
 
 import streamlit as st
 import pandas as pd
