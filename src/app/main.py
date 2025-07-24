@@ -1,5 +1,6 @@
 ### Code
 ## Here we will write the code for the NN
+#Για να τρέξει ο κώδικας στο cmd τα ακόλουθα
 # cd MedSegFlow/src/app
 # streamlit run main.py
 
