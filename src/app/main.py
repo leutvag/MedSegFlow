@@ -3,6 +3,7 @@
 #Για να τρέξει ο κώδικας στο cmd τα ακόλουθα
 # cd MedSegFlow/src/app
 # streamlit run main.py
+#prosthesa sxolio
 
 import streamlit as st
 import pandas as pd
