@@ -77,43 +77,94 @@ def draw_contour(orig_image_pil, mask, threshold=0.5):
 
     return img_draw
 
-def draw_precise_green_contour(orig_image_pil, mask=None, adaptive=True):
+def draw_precise_green_contour(orig_image_pil, pred_mask, min_area=50):
     """
-    Σχεδιάζει ακριβές contour γύρω από τον όγκο στην εικόνα.
-    mask: αν υπάρχει, χρησιμοποιείται η μάσκα του μοντέλου
-    adaptive: αν True, χρησιμοποιεί adaptive threshold από τη φωτεινότητα της εικόνας
+    Συνδυάζει prediction και φωτεινότητα για πολύ ακριβές contour.
     """
-    # Μετατρέπουμε σε grayscale array
-    img_array = np.array(orig_image_pil).astype(np.float32)
-    if img_array.ndim == 3:
-        img_array = np.mean(img_array, axis=2)
-    img_norm = (img_array - img_array.min()) / (img_array.max() - img_array.min() + 1e-8)
-
-    if mask is None:
-        # Adaptive threshold: pixels πιο λευκά από μέσο+0.5*std θεωρούνται όγκος
-        if adaptive:
-            thresh = img_norm.mean() + 0.5 * img_norm.std()
-            mask_bin = (img_norm >= thresh).astype(np.uint8)
-        else:
-            mask_bin = (img_norm > 0.5).astype(np.uint8)
-    else:
-        mask_bin = (mask > 0.5).astype(np.uint8)
-
-    contours = measure.find_contours(mask_bin, level=0.5)
-
-    y_scale = orig_image_pil.height / mask_bin.shape[0]
-    x_scale = orig_image_pil.width / mask_bin.shape[1]
+    # Original grayscale
+    gray = np.array(orig_image_pil).astype(np.float32)
+    if gray.ndim == 3:
+        gray = np.mean(gray, axis=2)
+    
+    # Prediction mask (0..1) -> binary
+    mask_bin = (pred_mask > 0.5).astype(np.uint8)
+    
+    # Εφαρμογή φωτεινότητας μόνο μέσα στη μάσκα
+    masked_gray = gray * mask_bin
+    
+    # Threshold: μόνο πολύ φωτεινά pixels μέσα στη μάσκα
+    thresh_val = filters.threshold_otsu(masked_gray[masked_gray>0])
+    final_mask = ((masked_gray >= thresh_val) & (mask_bin==1)).astype(np.uint8)
+    
+    # Connected components
+    labels = measure.label(final_mask)
+    regions = measure.regionprops(labels)
+    if not regions:
+        return orig_image_pil
+    
+    # Κρατάμε μόνο τη μεγαλύτερη περιοχή
+    largest_region = max(regions, key=lambda r: r.area)
+    if largest_region.area < min_area:
+        return orig_image_pil
+    region_mask = (labels == largest_region.label).astype(np.uint8)
+    
+    # Contours
+    contours = measure.find_contours(region_mask, level=0.5)
+    y_scale = orig_image_pil.height / region_mask.shape[0]
+    x_scale = orig_image_pil.width / region_mask.shape[1]
 
     img_draw = orig_image_pil.convert("RGB")
     draw = ImageDraw.Draw(img_draw)
-
     for contour in contours:
         contour_scaled = [(c[1]*x_scale, c[0]*y_scale) for c in contour]
-        # Σχεδίασε γραμμή πράσινη με width=2
         draw.line(contour_scaled + [contour_scaled[0]], fill=(0,255,0), width=2)
 
     return img_draw
 
+
+# --------------------------------------------------------------------------------------------------------
+
+from skimage import filters
+
+def draw_exact_green_contour(orig_image_pil, min_area=50):
+    """
+    Ακριβές contour μόνο του όγκου βασισμένο στην φωτεινότητα.
+    min_area: αγνοεί πολύ μικρές περιοχές.
+    """
+    gray = np.array(orig_image_pil).astype(np.float32)
+    if gray.ndim == 3:
+        gray = np.mean(gray, axis=2)
+
+    # Threshold: Otsu ή manual υψηλή φωτεινότητα
+    thresh_val = filters.threshold_otsu(gray)
+    mask_bin = (gray >= thresh_val).astype(np.uint8)
+
+    # Connected components
+    labels = measure.label(mask_bin)
+    regions = measure.regionprops(labels)
+
+    # Κρατάμε μόνο τη μεγαλύτερη περιοχή
+    if not regions:
+        return orig_image_pil
+    largest_region = max(regions, key=lambda r: r.area)
+    if largest_region.area < min_area:
+        return orig_image_pil
+
+    region_mask = (labels == largest_region.label).astype(np.uint8)
+    contours = measure.find_contours(region_mask, level=0.5)
+
+    y_scale = orig_image_pil.height / region_mask.shape[0]
+    x_scale = orig_image_pil.width / region_mask.shape[1]
+
+    img_draw = orig_image_pil.convert("RGB")
+    draw = ImageDraw.Draw(img_draw)
+    for contour in contours:
+        contour_scaled = [(c[1]*x_scale, c[0]*y_scale) for c in contour]
+        draw.line(contour_scaled + [contour_scaled[0]], fill=(0,255,0), width=2)
+
+    return img_draw
+
+# ----------------------------------------------------------------------------------------------------
 
 
 # ---------------------------
@@ -298,6 +349,10 @@ if uploaded_file is not None:
 
         except Exception as e:
             st.error(f"Σφάλμα στην πρόβλεψη: {e}")
+
+precise_contour_img = draw_exact_green_contour(pil_img, min_area=100)
+st.image(precise_contour_img, use_column_width=True)
+
 
 # ---------------------------
 # Footer
