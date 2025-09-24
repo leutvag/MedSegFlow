@@ -1,5 +1,5 @@
 # main.py
-### MedSegFlow CNN + Heatmap + Contour
+### MedSegFlow CNN + Heatmap + Contour + AutoAugmentation + EarlyStopping
 # cd MedSegFlow/src/app
 # streamlit run main.py
 
@@ -13,6 +13,7 @@ import io
 import tensorflow as tf
 from tensorflow.keras import layers, models, applications
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import EarlyStopping
 import matplotlib.pyplot as plt
 import cv2
 from skimage import measure
@@ -41,7 +42,10 @@ def create_image_generators(folder, target_size=(224,224), batch_size=8):
         validation_split=0.2,
         horizontal_flip=True,
         vertical_flip=True,
-        rotation_range=20
+        rotation_range=20,
+        brightness_range=(0.8,1.2),
+        zoom_range=0.1,
+        shear_range=0.1
     )
     train_gen = datagen.flow_from_directory(
         folder,
@@ -86,6 +90,8 @@ def get_gradcam_heatmap(img_array, model, last_conv_layer_name="top_conv"):
     heatmap = tf.squeeze(heatmap)
     heatmap = np.maximum(heatmap, 0) / (np.max(heatmap)+1e-8)
     heatmap = cv2.resize(heatmap.numpy(), (img_array.shape[2], img_array.shape[1]))
+    # heatmap = cv2.resize(heatmap, (img_array.shape[2], img_array.shape[1]))
+
     return heatmap
 
 def overlay_heatmap_on_image(img_pil, heatmap, alpha=0.5, colormap=cv2.COLORMAP_JET):
@@ -95,22 +101,15 @@ def overlay_heatmap_on_image(img_pil, heatmap, alpha=0.5, colormap=cv2.COLORMAP_
     return Image.fromarray(overlayed)
 
 def draw_contour_on_heatmap(img_pil, heatmap, threshold=0.5):
-    """
-    Σχεδιάζει contour γύρω από περιοχές heatmap πάνω στην εικόνα.
-    """
     mask = (heatmap >= threshold).astype(np.uint8)
     contours = measure.find_contours(mask, 0.5)
-
     img_draw = img_pil.convert("RGB")
     draw = ImageDraw.Draw(img_draw)
-
     y_scale = img_pil.height / mask.shape[0]
     x_scale = img_pil.width / mask.shape[1]
-
     for contour in contours:
         contour_scaled = [(c[1]*x_scale, c[0]*y_scale) for c in contour]
         draw.line(contour_scaled + [contour_scaled[0]], fill=(0,255,0), width=3)
-
     return img_draw
 
 # ---------------------------
@@ -135,24 +134,23 @@ if train_button:
     if uploaded_zip is None:
         st.warning("Πρέπει να ανεβάσεις dataset zip πρώτα!")
     else:
-        st.info("Εξαγωγή zip και φόρτωση δεδομένων...")
         folder = extract_zip_to_folder(uploaded_zip.getvalue())
         st.success("Dataset εξήχθη.")
 
-        st.info("Δημιουργία image generators...")
         train_gen, val_gen = create_image_generators(folder, target_size=target_size, batch_size=batch_size)
         st.success(f"Training samples: {train_gen.samples}, Validation samples: {val_gen.samples}")
 
-        st.info("Δημιουργία μοντέλου CNN...")
         model = build_model(input_shape=(target_size[0], target_size[1],3))
         st.success("Model έτοιμο.")
 
-        st.info("Ξεκινάει το training...")
+        early_stop = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+
         with st.spinner("Training σε εξέλιξη..."):
             history = model.fit(
                 train_gen,
                 validation_data=val_gen,
-                epochs=epochs
+                epochs=epochs,
+                callbacks=[early_stop]
             )
         st.success("Training ολοκληρώθηκε!")
         model.save("cnn_yesno_model.h5")
@@ -172,25 +170,19 @@ if uploaded_file is not None:
 
     if predict_button:
         try:
-            st.info("Προετοιμασία εικόνας...")
             img_resized = pil_img.resize(target_size)
             img_array = np.expand_dims(np.array(img_resized)/255.0, axis=0)
 
-            st.info("Φόρτωση μοντέλου...")
             model = tf.keras.models.load_model("cnn_yesno_model.h5", compile=False)
 
-            st.info("Κάνει πρόβλεψη...")
             pred = model.predict(img_array)[0,0]
             st.success(f"Prediction: {'YES (όγκος)' if pred>0.5 else 'NO (όχι όγκος)'} ({pred:.2f})")
 
-            st.info("Δημιουργία Grad-CAM heatmap...")
             heatmap = get_gradcam_heatmap(img_array, model)
             overlayed_img = overlay_heatmap_on_image(pil_img, heatmap)
-
             st.subheader("Heatmap (πιθανή περιοχή όγκου)")
             st.image(overlayed_img, use_column_width=True)
 
-            st.info("Σχεδίαση contour γύρω από περιοχές υψηλής πιθανότητας...")
             contour_img = draw_contour_on_heatmap(pil_img, heatmap, threshold=heatmap_threshold)
             st.subheader("Contour γύρω από πιθανή περιοχή όγκου")
             st.image(contour_img, use_column_width=True)
@@ -198,3 +190,15 @@ if uploaded_file is not None:
         except Exception as e:
             st.error(f"Σφάλμα: {e}")
 
+# ---------------------------
+# Footer
+# ---------------------------
+st.markdown("---")
+st.markdown("""
+**Σχετικά με την εφαρμογή:**  
+Αυτό το Streamlit app εκπαιδεύει ένα CNN για να ταξινομεί MRI εικόνες σε YES (όγκος) ή NO (χωρίς όγκο).  
+Μετά την εκπαίδευση ή φόρτωση του μοντέλου, μπορεί να κάνει πρόβλεψη για νέες εικόνες και να εμφανίζει:  
+- **Prediction**: πιθανότητα ύπαρξης όγκου.  
+- **Grad-CAM Heatmap**: πιθανοί όγκοι με έγχρωμη επισήμανση.  
+- **Contour**: ακριβή περίγραμμα γύρω από περιοχές υψηλής πιθανότητας όγκου.
+""")
